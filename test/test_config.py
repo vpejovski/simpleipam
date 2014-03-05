@@ -18,10 +18,11 @@ class ConfigTest(unittest.TestCase):
     '''An unit test case for ipam data store.'''
 
     def setUp(self):
-        pass
+        with open(os.path.join(os.path.realpath(os.path.curdir), 'ipam_db'), 'wb') as config_file:
+            config_file.write('{"192.168.1.0/24": {"192.168.1.1": ["gateway", "ff:ff:ff:ff:ff:ff:ff:ff"]}}')
 
-    def tearDown(self):
-        pass
+    def teardown(self):
+        os.remove(os.path.join(os.path.realpath(os.path.curdir), 'ipam_db'))
 
     def test_create_file_store(self):
         file_store = ipam.config.FileSystemStore()
@@ -37,44 +38,31 @@ class ConfigTest(unittest.TestCase):
         file_store.file_name ='ipam_db'
         assert_equal('ipam_db', file_store.file_name)
 
-    def test_get_ip_address(self):
+    def test_release_ip(self):
         file_store = ipam.config.FileSystemStore(path=os.path.realpath(os.path.curdir), file_name='ipam_db')
-        ip_address = file_store.get_ip_address('hostname', 'mac_address')
-        assert_is_not_none(ip_address)
+        file_store.release_ip("192.168.1.0/24", "192.168.1.1", "gateway", "ff:ff:ff:ff:ff:ff:ff:ff")
 
-    def test_get_ip_address_check_duplicate(self):
+    @raises(ipam.exception.UnknownAssignmentError)
+    def test_release_ip_non_existent(self):
         file_store = ipam.config.FileSystemStore(path=os.path.realpath(os.path.curdir), file_name='ipam_db')
-        ip_address_1 = file_store.get_ip_address('hostname1', 'mac_address1')
-        ip_address_2 = file_store.get_ip_address('hostname2', 'mac_address2')
-        assert_not_equal(ip_address_1, ip_address_2)
+        file_store.release_ip("192.168.1.0/24", "192.168.1.2", "gateway2", "ff:ff:ff:ff:ff:ff:ff:ff")
 
-    def test_release_ip_address(self):
+    @raises(ipam.exception.NoMatchAssignmentError)
+    def test_release_ip_diff_host_name(self):
         file_store = ipam.config.FileSystemStore(path=os.path.realpath(os.path.curdir), file_name='ipam_db')
-        ip_address_1 = file_store.get_ip_address('hostname1', '08:00:27:59:ab:61')
-        ip_address_2 = file_store.get_ip_address('hostname2', '08:00:27:59:ab:62')
+        file_store.release_ip("192.168.1.0/24", "192.168.1.1", "gateway2", "ff:ff:ff:ff:ff:ff:ff:ff")
 
-        file_store.release_ip_address(ip_address_2, 'hostname2', '08:00:27:59:ab:62')
-        ip_address_3 = file_store.get_ip_address('hostname2', '08:00:27:59:ab:62')
-        assert_equal(ip_address_2, ip_address_3)
-
-    def test_get_assigned_ips(self):
+    @raises(ipam.exception.DuplicateAssignmentError)
+    def test_assign_ip_duplicate(self):
         file_store = ipam.config.FileSystemStore(path=os.path.realpath(os.path.curdir), file_name='ipam_db')
-        assigned_ip_list = file_store.get_assigned_ip_addresses()
-        assert_equal(1, len(assigned_ip_list))
+        file_store.assign_ip("192.168.1.0/24", "192.168.1.1", "gateway", "ff:ff:ff:ff:ff:ff:ff:ff")
 
-    def test_get_assigned_ips(self):
+    @raises(ipam.exception.FileUpdateError)
+    def test_persist_datastore_error(self):
         file_store = ipam.config.FileSystemStore(path=os.path.realpath(os.path.curdir), file_name='ipam_db')
-        assigned_ip_list = file_store.get_assigned_ip_addresses()
-        assert_equal(1, len(assigned_ip_list))
-
-        ip_address_1 = file_store.get_ip_address('hostname1', '08:00:27:59:ab:61')
-        assigned_ip_list = file_store.get_assigned_ip_addresses()
-        assert_equal(2, len(assigned_ip_list))
-
-    @raises(ipam.exception.ParameterMissingError)
-    def test_empty_parameter(self):
-        file_store = ipam.config.FileSystemStore()
-        assigned_ip_list = file_store.get_assigned_ip_addresses()
+        def f() : return False
+        file_store._acquire_lock = f
+        file_store.assign_ip("192.168.1.0/24", "192.168.1.2", "gateway2", "ff:ff:ff:ff:ff:ff:ff:fe")
 
 
 if __name__ == '__main__':

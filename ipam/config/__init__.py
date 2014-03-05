@@ -2,16 +2,46 @@ import os
 import json
 import ipcalc
 import ipam.exception
+import threading
 
-class FileSystemStore(object):
-    """docstring for FileSystemStore"""
+
+class DataStore(object):
+    """Base class for DataStore"""
+
+    def __init__(self):
+        super(DataStore, self).__init__()
+        self._data_store = None
+        self._rlock = threading.RLock()
+
+    def get_datastore(self):
+        pass
+
+    def assign_ip(self, network, ip_address, hostname, mac_address):
+        raise NotImplementedError
+
+    def release_ip(self, network, ip_address, hostname, mac_address):
+        raise NotImplementedError
+
+    def assigned_ips(self, network):
+        raise NotImplementedError
+
+    def persist_datastore(self):
+        pass
+
+    def _acquire_lock(self):
+        return self._rlock.acquire()
+
+    def _release_lock(self):
+        self._rlock.release()
+
+
+class FileSystemStore(DataStore):
+    """doc string for FileSystemStore"""
 
     def __init__(self, path=None, file_name=None):
         super(FileSystemStore, self).__init__()
         self._path = path
         self._file_name = file_name
-        self._file_store = None
-        self._data_store = None
 
     @property
     def path(self):
@@ -35,8 +65,7 @@ class FileSystemStore(object):
                 with open(os.path.join(self._path, self._file_name), 'r') as config_file:
                     self._data_store = json.load(config_file)
 
-
-    def _get_datastore(self):
+    def get_datastore(self):
         if self._path is None or self._file_name is None:
             raise ipam.exception.ParameterMissingError("File name and path are empty.")
 
@@ -45,8 +74,9 @@ class FileSystemStore(object):
 
         return self._data_store
 
+    def get_network(self, network=None):
+        self.get_datastore()
 
-    def _get_network(self, network=None):
         if network is None:
             network_key = sorted(self._data_store.keys())[0]
         else:
@@ -55,35 +85,40 @@ class FileSystemStore(object):
         network = ipcalc.Network(network_key)
         return network, network_key
 
-    def get_ip_address(self, hostname, mac_address, network=None):
-        '''
-            Return a first free ip address from either specified network
-            or default network (first one in sorted list).
-        '''
-        if self._data_store is None:
-            self._load_database()
+    def assign_ip(self, network, ip_address, hostname, mac_address):
+        """
+        Makes assignment to DataStore permanent.
+        """
+        self.get_datastore()
+        if ip_address in self._data_store[network]:
+            raise ipam.exception.DuplicateAssignmentError("Ip address already assigned.")
 
-        network, network_key = self._get_network()
+        self._data_store[network][ip_address] = [hostname, mac_address]
+        self.persist_datastore()
 
-        network_hosts = sorted(self._data_store[self._data_store.keys()[0]].keys())
+    def release_ip(self, network, ip_address, hostname, mac_address):
+        """
+        Release already assigned ip.
+        """
+        self.get_datastore()
+        if ip_address in self._data_store[network]:
+            if hostname == self._data_store[network][ip_address][0] and mac_address == self._data_store[network][ip_address][1]:
+                del self._data_store[network][ip_address]
+            else:
+                raise ipam.exception.NoMatchAssignmentError("Ip address assigned to a different host.")
+        else:
+            raise ipam.exception.UnknownAssignmentError("Ip address is not found in database.")
+        self.persist_datastore()
 
-        for ip_address in network:
-            if ip_address not in network_hosts:
-                self._data_store[network_key][str(ip_address)] = [hostname, mac_address]
-                return str(ip_address)
+    def assigned_ips(self, network):
+        self.get_datastore()
+        network, network_key = self.get_network(network)
+        return sorted(self._data_store[network_key].keys())
 
-    def release_ip_address(self, ip_address, hostname, mac_address, network=None):
-        if network is None:
-            network, network_key = self._get_network()
-
-        if ip_address in self._data_store[network_key]:
-            if hostname == self._data_store[network_key][ip_address][0] and mac_address == self._data_store[network_key][ip_address][1]:
-                del self._data_store[network_key][ip_address]
-
-
-    def get_assigned_ip_addresses(self, network=None):
-        data_store = self._get_datastore()
-
-        network, network_key = self._get_network(network)
-
-        return sorted(data_store[network_key].keys())
+    def persist_datastore(self):
+        if self._acquire_lock():
+            with open(os.path.join(self._path, self._file_name), 'wb') as config_file:
+                json.dump(self._data_store, config_file, indent=4, encoding="utf-8", sort_keys=True)
+            self._release_lock()
+        else:
+            raise ipam.exception.FileUpdateError
